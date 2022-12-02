@@ -1,0 +1,21 @@
+Source: proxsuite
+Priority: optional
+Maintainer: Pierre Gergondet <pierre.gergondet+ppa@gmail.com>
+Standards-Version: 3.9.5
+Section: libs
+Homepage: https://github.com/robotology/proxsuite
+Build-Depends: debhelper (>= 9),
+               pkg-config,
+               cmake,
+               doxygen,
+               graphviz,
+               libeigen3-dev
+
+Package: libproxsuite-dev
+Section: libdevel
+Architecture: any
+Depends: cmake,
+         libeigen3-dev,
+         ${shlibs:Depends},
+         ${misc:Depends}
+Description: Advanced Proximal Optimization Toolbox
