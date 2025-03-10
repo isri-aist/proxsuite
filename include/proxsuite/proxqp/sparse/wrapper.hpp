@@ -147,6 +147,11 @@ struct QP
     }
   }
 
+  QP(const QP&) = delete;
+  QP& operator=(const QP&) = delete;
+  QP(QP&&) = default;
+  QP& operator=(QP&&) = default;
+
   /*!
    * Setups the QP model (with sparse matrix format) and equilibrates it.
    * @param H quadratic cost input defining the QP model.
@@ -172,7 +177,8 @@ struct QP
             bool compute_preconditioner_ = true,
             optional<T> rho = nullopt,
             optional<T> mu_eq = nullopt,
-            optional<T> mu_in = nullopt)
+            optional<T> mu_in = nullopt,
+            optional<T> manual_minimal_H_eigenvalue = nullopt)
   {
     if (settings.compute_timings) {
       work.timer.stop();
@@ -293,6 +299,7 @@ struct QP
     if (H != nullopt) {
       SparseMat<T, I> H_triu =
         (H.value()).template triangularView<Eigen::Upper>();
+
       sparse::QpView<T, I> qp = {
         { proxsuite::linalg::sparse::from_eigen, H_triu },
         { proxsuite::linalg::sparse::from_eigen, model.g },
@@ -303,6 +310,9 @@ struct QP
         { proxsuite::linalg::sparse::from_eigen, model.u }
       };
       qp_setup(qp, results, model, work, settings, ruiz, preconditioner_status);
+      proxsuite::proxqp::sparse::
+        update_default_rho_with_minimal_Hessian_eigen_value(
+          manual_minimal_H_eigenvalue, results, settings);
     } else {
       SparseMat<T, I> H_triu(model.dim, model.dim);
       H_triu.setZero();
@@ -351,10 +361,11 @@ struct QP
               const optional<SparseMat<T, I>> C,
               optional<VecRef<T>> l,
               optional<VecRef<T>> u,
-              bool update_preconditioner = true,
+              bool update_preconditioner = false,
               optional<T> rho = nullopt,
               optional<T> mu_eq = nullopt,
-              optional<T> mu_in = nullopt)
+              optional<T> mu_in = nullopt,
+              optional<T> manual_minimal_H_eigenvalue = nullopt)
   {
     if (!work.internal.is_initialized) {
       init(H, g, A, b, C, l, u, update_preconditioner, rho, mu_eq, mu_in);
@@ -615,6 +626,11 @@ struct QP
              ruiz,
              preconditioner_status); // store model value + performs scaling
                                      // according to chosen options
+    if (H != nullopt) {
+      proxsuite::proxqp::sparse::
+        update_default_rho_with_minimal_Hessian_eigen_value(
+          manual_minimal_H_eigenvalue, results, settings);
+    }
     if (settings.compute_timings) {
       results.info.setup_time = work.timer.elapsed().user; // in microseconds
     }
@@ -684,6 +700,12 @@ struct QP
  * @param max_iter maximum number of iteration.
  * @param initial_guess initial guess option for warm starting or not the
  * initial iterate values.
+ * @param check_duality_gap If set to true, include the duality gap in absolute
+ * and relative stopping criteria.
+ * @param eps_duality_gap_abs absolute accuracy threshold for the duality-gap
+ * criterion.
+ * @param eps_duality_gap_rel relative accuracy threshold for the duality-gap
+ * criterion.
  */
 template<typename T, typename I>
 proxqp::Results<T>
@@ -705,12 +727,17 @@ solve(
   optional<T> mu_in = nullopt,
   optional<bool> verbose = nullopt,
   bool compute_preconditioner = true,
-  bool compute_timings = true,
+  bool compute_timings = false,
   optional<isize> max_iter = nullopt,
   proxsuite::proxqp::InitialGuessStatus initial_guess =
     proxsuite::proxqp::InitialGuessStatus::EQUALITY_CONSTRAINED_INITIAL_GUESS,
   proxsuite::proxqp::SparseBackend sparse_backend =
-    proxsuite::proxqp::SparseBackend::Automatic)
+    proxsuite::proxqp::SparseBackend::Automatic,
+  bool check_duality_gap = false,
+  optional<T> eps_duality_gap_abs = nullopt,
+  optional<T> eps_duality_gap_rel = nullopt,
+  bool primal_infeasibility_solving = false,
+  optional<T> manual_minimal_H_eigenvalue = nullopt)
 {
 
   isize n(0);
@@ -728,6 +755,7 @@ solve(
 
   proxqp::sparse::QP<T, I> Qp(n, n_eq, n_in);
   Qp.settings.initial_guess = initial_guess;
+  Qp.settings.check_duality_gap = check_duality_gap;
 
   if (eps_abs != nullopt) {
     Qp.settings.eps_abs = eps_abs.value();
@@ -739,15 +767,116 @@ solve(
     Qp.settings.verbose = verbose.value();
   }
   if (max_iter != nullopt) {
-    Qp.settings.max_iter = verbose.value();
+    Qp.settings.max_iter = max_iter.value();
+  }
+  if (eps_duality_gap_abs != nullopt) {
+    Qp.settings.eps_duality_gap_abs = eps_duality_gap_abs.value();
+  }
+  if (eps_duality_gap_rel != nullopt) {
+    Qp.settings.eps_duality_gap_rel = eps_duality_gap_rel.value();
   }
   Qp.settings.compute_timings = compute_timings;
   Qp.settings.sparse_backend = sparse_backend;
-  Qp.init(H, g, A, b, C, l, u, compute_preconditioner, rho, mu_eq, mu_in);
+  Qp.settings.primal_infeasibility_solving = primal_infeasibility_solving;
+  if (manual_minimal_H_eigenvalue != nullopt) {
+    Qp.init(H,
+            g,
+            A,
+            b,
+            C,
+            l,
+            u,
+            compute_preconditioner,
+            rho,
+            mu_eq,
+            mu_in,
+            manual_minimal_H_eigenvalue.value());
+  } else {
+    Qp.init(
+      H, g, A, b, C, l, u, compute_preconditioner, rho, mu_eq, mu_in, nullopt);
+  }
   Qp.solve(x, y, z);
 
   return Qp.results;
 }
+
+///// BatchQP object
+template<typename T, typename I>
+struct BatchQP
+{
+  /*!
+   * A vector of QP aligned of size BatchSize
+   * specified by the user.
+   */
+  std::vector<QP<T, I>> qp_vector;
+  sparse::isize m_size;
+
+  BatchQP(long unsigned int batchSize)
+  {
+    if (qp_vector.max_size() != batchSize) {
+      qp_vector.clear();
+      qp_vector.reserve(batchSize);
+    }
+    m_size = 0;
+  }
+  BatchQP(const BatchQP&) = delete;
+  BatchQP& operator=(const BatchQP&) = delete;
+  BatchQP(BatchQP&&) = default;
+  BatchQP& operator=(BatchQP&&) = default;
+
+  /*!
+   * Init a QP in place and return a reference to it
+   */
+  QP<T, I>& init_qp_in_place(sparse::isize dim,
+                             sparse::isize n_eq,
+                             sparse::isize n_in)
+  {
+    qp_vector.emplace_back(dim, n_eq, n_in);
+    auto& qp = qp_vector.back();
+    m_size++;
+    return qp;
+  };
+
+  // /*!
+  //  * Init a QP in place and return a reference to it
+  //  */
+  // QP<T, I>& init_qp_in_place(const sparse::SparseMat<bool, I>& H,
+  //                            const sparse::SparseMat<bool, I>& A,
+  //                            const sparse::SparseMat<bool, I>& C)
+  // {
+  //   qp_vector.emplace_back(H.rows(), A.rows(), C.rows());
+  //   auto& qp = qp_vector.back();
+  //   m_size++;
+  //   return qp;
+  // };
+
+  /*!
+   * Inserts a qp to the end of qp_vector
+   */
+  void insert(QP<T, I>& qp) { qp_vector.emplace_back(qp); };
+
+  /*!
+   * Access QP at position i
+   */
+  QP<T, I>& get(isize i) { return qp_vector.at(size_t(i)); };
+
+  /*!
+   * Access QP at position i
+   */
+  const QP<T, I>& get(isize i) const { return qp_vector.at(size_t(i)); };
+
+  /*!
+   * Access QP at position i
+   */
+  QP<T, I>& operator[](isize i) { return get(i); };
+
+  /*!
+   * Access QP at position i
+   */
+  const QP<T, I>& operator[](isize i) const { return get(i); };
+
+  sparse::isize size() { return m_size; };
+};
 
 } // namespace sparse
 } // namespace proxqp

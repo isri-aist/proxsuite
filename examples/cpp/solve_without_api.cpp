@@ -14,10 +14,12 @@ main()
   isize n = 10;
   isize n_eq(n / 4);
   isize n_in(n / 4);
-  T p = 0.15;            // level of sparsity
+  T p = 0.35;            // level of sparsity
   T conditioning = 10.0; // conditioning level for H
-  auto H = utils::rand::sparse_positive_definite_rand(n, conditioning, p);
+  auto H = utils::rand::sparse_positive_definite_rand(
+    n, conditioning, p); // upper triangular matrix
   Mat H_dense = Mat(H);
+  H_dense.template triangularView<Eigen::Lower>() = H_dense.transpose();
   Vec g = utils::rand::vector_rand<T>(n);
   auto A = utils::rand::sparse_matrix_rand<T>(n_eq, n, p);
   Mat A_dense = Mat(A);
@@ -48,4 +50,45 @@ main()
             << std::endl;
   std::cout << "optimal z from dense solver: " << results_dense_solver.z
             << std::endl;
+
+  // Solve the problem using the dense backend using its feature for handling
+  // box constraints
+
+  // some trivial boxes
+  Vec u_box(n);
+  Vec l_box(n);
+  u_box.setZero();
+  l_box.setZero();
+  u_box.array() += 1.E10;
+  l_box.array() -= 1.E10;
+  // make sure to specify at least next 9 variables of the solve function after
+  // u_box to make sure the overloading work and use the specific feature for
+  // handling more efficiently box constraints
+  Results<T> results_dense_solver_box = dense::solve<T>(H_dense,
+                                                        g,
+                                                        A_dense,
+                                                        b,
+                                                        C_dense,
+                                                        l,
+                                                        u,
+                                                        l_box,
+                                                        u_box,
+                                                        proxsuite::nullopt,
+                                                        proxsuite::nullopt,
+                                                        proxsuite::nullopt,
+                                                        proxsuite::nullopt,
+                                                        proxsuite::nullopt,
+                                                        proxsuite::nullopt,
+                                                        proxsuite::nullopt,
+                                                        proxsuite::nullopt,
+                                                        proxsuite::nullopt);
+  // print an optimal solution x,y and z
+  std::cout << "optimal x from dense solver: " << results_dense_solver.x
+            << std::endl;
+  std::cout << "optimal y from dense solver: " << results_dense_solver.y
+            << std::endl;
+  std::cout << "optimal z from dense solver: " << results_dense_solver.z
+            << std::endl;
+  // Note that the last n elements of z corresponds to the multipliers
+  // associated to the box constraints
 }

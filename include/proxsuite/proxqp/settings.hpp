@@ -22,7 +22,35 @@ enum struct SparseBackend
   SparseCholesky, // sparse cholesky backend.
   MatrixFree,     // iterative matrix free sparse backend.
 };
-
+// Sparse backend specifications
+enum struct DenseBackend
+{
+  Automatic,      // the solver will select the appropriate dense backend.
+  PrimalDualLDLT, // Factorization of the full regularized KKT matrix.
+  PrimalLDLT, // Factorize only the primal Hessian corresponding to H+rho I +
+              // 1/mu AT*A.
+};
+// MERIT FUNCTION
+enum struct MeritFunctionType
+{
+  GPDAL, // Generalized Primal Dual Augmented Lagrangian
+  PDAL,  // Primal Dual Augmented Lagrangian
+};
+// COST FUNCTION TYPE
+enum struct HessianType
+{
+  Zero,    // Linear Program
+  Dense,   // Quadratic Program
+  Diagonal // Quadratic Program with diagonal Hessian
+};
+// Augment the minimal eigen value of H with some regularizer
+enum struct EigenValueEstimateMethodOption
+{
+  PowerIteration, // Process a power iteration algorithm
+  ExactMethod     // Use Eigen's method to estimate the minimal eigenvalue
+                  // watch out, the last option is only available for dense
+                  // matrices!
+};
 inline std::ostream&
 operator<<(std::ostream& os, const SparseBackend& sparse_backend)
 {
@@ -32,6 +60,18 @@ operator<<(std::ostream& os, const SparseBackend& sparse_backend)
     os << "SparseCholesky";
   } else {
     os << "MatrixFree";
+  }
+  return os;
+}
+inline std::ostream&
+operator<<(std::ostream& os, const DenseBackend& dense_backend)
+{
+  if (dense_backend == DenseBackend::PrimalDualLDLT) {
+    os << "PrimalDualLDLT";
+  } else if (dense_backend == DenseBackend::PrimalLDLT) {
+    os << "PrimalLDLT";
+  } else {
+    os << "Automatic";
   }
   return os;
 }
@@ -85,13 +125,22 @@ struct Settings
   bool compute_preconditioner;
   bool compute_timings;
 
+  bool check_duality_gap;
+  T eps_duality_gap_abs;
+  T eps_duality_gap_rel;
+
   isize preconditioner_max_iter;
   T preconditioner_accuracy;
   T eps_primal_inf;
   T eps_dual_inf;
   bool bcl_update;
+  MeritFunctionType merit_function_type;
+  T alpha_gpdal;
 
   SparseBackend sparse_backend;
+  bool primal_infeasibility_solving;
+  isize frequence_infeasibility_check;
+  T default_H_eigenvalue_estimate;
   /*!
    * Default constructor.
    * @param default_rho default rho parameter of result class
@@ -130,12 +179,16 @@ struct Settings
    * @param initial_guess sets the initial guess option for initilizing x, y
    * and z.
    * @param update_preconditioner If set to true, the preconditioner will be
-   * re-derived with the update method.
+   * re-computed when calling the update method.
    * @param compute_preconditioner If set to true, the preconditioner will be
-   * derived with the init method.
-   * @param compute_timings If set to true, timings will be computed by the
-   * solver (setup time, solving time, and run time = setup time + solving
-   * time).
+   * computed with the init method.
+   * @param compute_timings If set to true, timings in microseconds will be
+   * computed by the solver (setup time, solving time, and run time = setup time
+   * + solving time).
+   * @param check_duality_gap If set to true, duality gap will be calculated and
+   * included in the stopping criterion.
+   * @param eps_duality_gap_abs absolute duality-gap stopping criterion.
+   * @param eps_duality_gap_rel relative duality-gap stopping criterion.
    * @param preconditioner_max_iter maximal number of authorized iterations for
    * the preconditioner.
    * @param preconditioner_accuracy accuracy level of the preconditioner.
@@ -147,10 +200,18 @@ struct Settings
    * used.
    * @param sparse_backend Default automatic. User can choose between sparse
    * cholesky or iterative matrix free sparse backend.
+   * @param primal_infeasibility_solving solves the closest primal feasible
+   * problem if activated
+   * @param frequence_infeasibility_check frequence at which infeasibility is
+   * checked
+   * @param find_H_minimal_eigenvalue track the minimal eigen value of the
+   * quadratic cost H
+   * @param default_H_eigenvalue_estimate default H eigenvalue estimate (i.e.,
+   * if we make a model update and H does not change this one is used)
    */
 
   Settings(
-    T default_rho = 1.E-6,
+    DenseBackend dense_backend = DenseBackend::PrimalDualLDLT,
     T default_mu_eq = 1.E-3,
     T default_mu_in = 1.E-1,
     T alpha_bcl = 0.1,
@@ -180,17 +241,24 @@ struct Settings
                                           // EQUALITY_CONSTRAINED_INITIAL_GUESS,
                                           // as most often we run only
                                           // once a problem
-    bool update_preconditioner = true,
+    bool update_preconditioner = false,
     bool compute_preconditioner = true,
-    bool compute_timings = true,
+    bool compute_timings = false,
+    bool check_duality_gap = false,
+    T eps_duality_gap_abs = 1.e-4,
+    T eps_duality_gap_rel = 0,
     isize preconditioner_max_iter = 10,
     T preconditioner_accuracy = 1.e-3,
     T eps_primal_inf = 1.E-4,
     T eps_dual_inf = 1.E-4,
     bool bcl_update = true,
-    SparseBackend sparse_backend = SparseBackend::Automatic)
-    : default_rho(default_rho)
-    , default_mu_eq(default_mu_eq)
+    MeritFunctionType merit_function_type = MeritFunctionType::GPDAL,
+    T alpha_gpdal = 0.95,
+    SparseBackend sparse_backend = SparseBackend::Automatic,
+    bool primal_infeasibility_solving = false,
+    isize frequence_infeasibility_check = 1,
+    T default_H_eigenvalue_estimate = 0.)
+    : default_mu_eq(default_mu_eq)
     , default_mu_in(default_mu_in)
     , alpha_bcl(alpha_bcl)
     , beta_bcl(beta_bcl)
@@ -218,87 +286,96 @@ struct Settings
     , update_preconditioner(update_preconditioner)
     , compute_preconditioner(compute_preconditioner)
     , compute_timings(compute_timings)
+    , check_duality_gap(check_duality_gap)
+    , eps_duality_gap_abs(eps_duality_gap_abs)
+    , eps_duality_gap_rel(eps_duality_gap_rel)
     , preconditioner_max_iter(preconditioner_max_iter)
     , preconditioner_accuracy(preconditioner_accuracy)
     , eps_primal_inf(eps_primal_inf)
     , eps_dual_inf(eps_dual_inf)
     , bcl_update(bcl_update)
+    , merit_function_type(merit_function_type)
+    , alpha_gpdal(alpha_gpdal)
     , sparse_backend(sparse_backend)
+    , primal_infeasibility_solving(primal_infeasibility_solving)
+    , frequence_infeasibility_check(frequence_infeasibility_check)
+    , default_H_eigenvalue_estimate(default_H_eigenvalue_estimate)
   {
+    switch (dense_backend) {
+      case DenseBackend::PrimalDualLDLT:
+        default_rho = 1.E-6;
+        break;
+      case DenseBackend::PrimalLDLT:
+        default_rho = 1.E-5;
+        break;
+      case DenseBackend::Automatic:
+        default_rho = 1.E-6;
+        break;
+    }
   }
-  /*
- void set(
-           T alpha_bcl_ = 0.1,
-           T beta_bcl_ = 0.9,
-           T refactor_dual_feasibility_threshold_ = 1e-2,
-           T refactor_rho_threshold_ = 1e-7,
-           T mu_min_eq_ = 1e-9,
-           T mu_min_in_ = 1e-8,
-           T mu_max_eq_inv_ = 1e9,
-           T mu_max_in_inv_ = 1e8,
-           T mu_update_factor_ = 0.1,
-           T mu_update_inv_factor_ = 10,
-           T cold_reset_mu_eq_ = 1. / 1.1,
-           T cold_reset_mu_in_ = 1. / 1.1,
-           T cold_reset_mu_eq_inv_ = 1.1,
-           T cold_reset_mu_in_inv_ = 1.1,
-           T eps_abs_ = 1.e-8,
-           T eps_rel_ = 0,
-           isize max_iter_ = 10000,
-           isize max_iter_in_ = 1500,
-           isize safe_guard_ = 1.E4,
-           isize nb_iterative_refinement_ = 10,
-           T eps_refact_ = 1.e-6, // before eps_refact_=1.e-6
-           bool VERBOSE = false,
-           InitialGuessStatus initial_guess_ =
-             InitialGuessStatus::WARM_START_WITH_PREVIOUS_RESULT,
-           bool update_preconditioner_ = true,
-           bool compute_preconditioner_ = true,
-           bool compute_timings_ = true,
-           isize preconditioner_max_iter_ = 10,
-           T preconditioner_accuracy_ = 1.e-3,
-           T eps_primal_inf_ = 1.E-4,
-           T eps_dual_inf_ = 1.E-4,
-           bool bcl_update_ = true,
-           SparseBackend sparse_backend_ = SparseBackend::Automatic
- ){
-    alpha_bcl = alpha_bcl_;
-    beta_bcl = beta_bcl_ ;
-    refactor_dual_feasibility_threshold = refactor_dual_feasibility_threshold_;
-    refactor_rho_threshold = refactor_rho_threshold_;
-    mu_min_eq = mu_min_eq_;
-    mu_min_in = mu_min_in_;
-    mu_max_eq_inv = mu_max_eq_inv_;
-    mu_max_in_inv = mu_max_in_inv_;
-    mu_update_factor = mu_update_factor_;
-    mu_update_inv_factor = mu_update_inv_factor_;
-    cold_reset_mu_eq = cold_reset_mu_eq_;
-    cold_reset_mu_in = cold_reset_mu_in_;
-    cold_reset_mu_eq_inv = cold_reset_mu_eq_inv_;
-    cold_reset_mu_in_inv = cold_reset_mu_in_inv_;
-    eps_abs = eps_abs_;
-    eps_rel = eps_rel_;
-    max_iter = max_iter_;
-    max_iter_in = max_iter_in_;
-    safe_guard = safe_guard_;
-    nb_iterative_refinement = nb_iterative_refinement_;
-    eps_refact = eps_refact_;
-    verbose = VERBOSE;
-    initial_guess = initial_guess_;
-    update_preconditioner = update_preconditioner_;
-    compute_preconditioner = compute_preconditioner_;
-    compute_timings = compute_timings_;
-    preconditioner_max_iter = preconditioner_max_iter_;
-    preconditioner_accuracy = preconditioner_accuracy_;
-    eps_primal_inf = eps_primal_inf_;
-    eps_dual_inf = eps_dual_inf_;
-    bcl_update = bcl_update_;
-    sparse_backend = sparse_backend_;
-
-
- }
- */
 };
+
+template<typename T>
+bool
+operator==(const Settings<T>& settings1, const Settings<T>& settings2)
+{
+  bool value =
+    settings1.default_rho == settings2.default_rho &&
+    settings1.default_mu_eq == settings2.default_mu_eq &&
+    settings1.default_mu_in == settings2.default_mu_in &&
+    settings1.alpha_bcl == settings2.alpha_bcl &&
+    settings1.alpha_bcl == settings2.alpha_bcl &&
+    settings1.refactor_dual_feasibility_threshold ==
+      settings2.refactor_dual_feasibility_threshold &&
+    settings1.refactor_rho_threshold == settings2.refactor_rho_threshold &&
+    settings1.mu_min_eq == settings2.mu_min_eq &&
+    settings1.mu_min_in == settings2.mu_min_in &&
+    settings1.mu_max_eq_inv == settings2.mu_max_eq_inv &&
+    settings1.mu_max_in_inv == settings2.mu_max_in_inv &&
+    settings1.mu_update_factor == settings2.mu_update_factor &&
+    settings1.mu_update_factor == settings2.mu_update_factor &&
+    settings1.cold_reset_mu_eq == settings2.cold_reset_mu_eq &&
+    settings1.cold_reset_mu_in == settings2.cold_reset_mu_in &&
+    settings1.cold_reset_mu_eq_inv == settings2.cold_reset_mu_eq_inv &&
+    settings1.cold_reset_mu_in_inv == settings2.cold_reset_mu_in_inv &&
+    settings1.eps_abs == settings2.eps_abs &&
+    settings1.eps_rel == settings2.eps_rel &&
+    settings1.max_iter == settings2.max_iter &&
+    settings1.max_iter_in == settings2.max_iter_in &&
+    settings1.safe_guard == settings2.safe_guard &&
+    settings1.nb_iterative_refinement == settings2.nb_iterative_refinement &&
+    settings1.eps_refact == settings2.eps_refact &&
+    settings1.verbose == settings2.verbose &&
+    settings1.initial_guess == settings2.initial_guess &&
+    settings1.update_preconditioner == settings2.update_preconditioner &&
+    settings1.compute_preconditioner == settings2.compute_preconditioner &&
+    settings1.compute_timings == settings2.compute_timings &&
+    settings1.check_duality_gap == settings2.check_duality_gap &&
+    settings1.eps_duality_gap_abs == settings2.eps_duality_gap_abs &&
+    settings1.eps_duality_gap_rel == settings2.eps_duality_gap_rel &&
+    settings1.preconditioner_max_iter == settings2.preconditioner_max_iter &&
+    settings1.preconditioner_accuracy == settings2.preconditioner_accuracy &&
+    settings1.eps_primal_inf == settings2.eps_primal_inf &&
+    settings1.eps_dual_inf == settings2.eps_dual_inf &&
+    settings1.bcl_update == settings2.bcl_update &&
+    settings1.merit_function_type == settings2.merit_function_type &&
+    settings1.alpha_gpdal == settings2.alpha_gpdal &&
+    settings1.sparse_backend == settings2.sparse_backend &&
+    settings1.primal_infeasibility_solving ==
+      settings2.primal_infeasibility_solving &&
+    settings1.frequence_infeasibility_check ==
+      settings2.frequence_infeasibility_check &&
+    settings1.default_H_eigenvalue_estimate ==
+      settings2.default_H_eigenvalue_estimate;
+  return value;
+}
+
+template<typename T>
+bool
+operator!=(const Settings<T>& settings1, const Settings<T>& settings2)
+{
+  return !(settings1 == settings2);
+}
 
 } // namespace proxqp
 } // namespace proxsuite

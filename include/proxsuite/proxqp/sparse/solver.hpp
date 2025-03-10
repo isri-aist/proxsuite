@@ -135,6 +135,14 @@ ldl_iter_solve_noalias(
     if (solve_iter > 0) {
       T mu_eq_neg = -results.info.mu_eq;
       T mu_in_neg = -results.info.mu_in;
+      // switch (settings.merit_function_type) {
+      //   case MeritFunctionType::GPDAL:
+      //     mu_in_neg = -settings.alpha_gpdal*results.info.mu_in;
+      //     break;
+      //   case MeritFunctionType::PDAL:
+      //     mu_in_neg = -results.info.mu_in;
+      //     break;
+      // }
       detail::noalias_symhiv_add(err, kkt_active.to_eigen(), sol_e);
       err_x += results.info.rho * sol_x;
       err_y += mu_eq_neg * sol_y;
@@ -324,11 +332,11 @@ struct PrimalDualGradResult
 /*!
  * Executes the PROXQP algorithm.
  *
- * @param work solver workspace.
- * @param model QP problem model as defined by the user (without any scaling
+ * @param results solver results.
+ * @param data QP problem model as defined by the user (without any scaling
  * performed).
  * @param settings solver settings.
- * @param results solver results.
+ * @param work solver workspace.
  * @param precond preconditioner.
  */
 template<typename T, typename I, typename P>
@@ -557,7 +565,7 @@ qp_solve(Results<T>& results,
       // ineq constraints initially inactive
       for (isize j = 0; j < n_in; ++j) {
         kkt_nnz_counts[n + n_eq + j] = 0;
-        results.active_constraints[j] = false;
+        work.active_inequalities[j] = false;
       }
       break;
     }
@@ -574,11 +582,11 @@ qp_solve(Results<T>& results,
         if (results.z(j) != 0) {
           kkt_nnz_counts[n + n_eq + j] = I(kkt.col_end(usize(n + n_eq + j)) -
                                            kkt.col_start(usize(n + n_eq + j)));
-          results.active_constraints[j] = true;
+          work.active_inequalities[j] = true;
           C_active_nnz += kkt_nnz_counts[n + n_eq + j];
         } else {
           kkt_nnz_counts[n + n_eq + j] = 0;
-          results.active_constraints[j] = false;
+          work.active_inequalities[j] = false;
         }
       }
       break;
@@ -592,7 +600,7 @@ qp_solve(Results<T>& results,
       // ineq constraints initially inactive
       for (isize j = 0; j < n_in; ++j) {
         kkt_nnz_counts[n + n_eq + j] = 0;
-        results.active_constraints[j] = false;
+        work.active_inequalities[j] = false;
       }
       break;
     }
@@ -608,12 +616,12 @@ qp_solve(Results<T>& results,
         if (results.z(j) != 0) {
           kkt_nnz_counts[n + n_eq + j] = I(kkt.col_end(usize(n + n_eq + j)) -
                                            kkt.col_start(usize(n + n_eq + j)));
-          results.active_constraints[j] = true;
+          work.active_inequalities[j] = true;
           C_active_nnz += kkt_nnz_counts[n + n_eq + j];
 
         } else {
           kkt_nnz_counts[n + n_eq + j] = 0;
-          results.active_constraints[j] = false;
+          work.active_inequalities[j] = false;
         }
       }
       break;
@@ -629,11 +637,11 @@ qp_solve(Results<T>& results,
         if (results.z(j) != 0) {
           kkt_nnz_counts[n + n_eq + j] = I(kkt.col_end(usize(n + n_eq + j)) -
                                            kkt.col_start(usize(n + n_eq + j)));
-          results.active_constraints[j] = true;
+          work.active_inequalities[j] = true;
           C_active_nnz += kkt_nnz_counts[n + n_eq + j];
         } else {
           kkt_nnz_counts[n + n_eq + j] = 0;
-          results.active_constraints[j] = false;
+          work.active_inequalities[j] = false;
         }
       }
       break;
@@ -656,7 +664,7 @@ qp_solve(Results<T>& results,
   I* ldl_row_indices = work.internal.ldl.row_indices.ptr_mut();
   T* ldl_values = work.internal.ldl.values.ptr_mut();
   proxsuite::linalg::veg::SliceMut<bool> active_constraints =
-    results.active_constraints.as_mut();
+    work.active_inequalities.as_mut();
 
   proxsuite::linalg::sparse::MatMut<T, I> ldl = {
     proxsuite::linalg::sparse::from_raw_parts,
@@ -678,7 +686,7 @@ qp_solve(Results<T>& results,
   auto y_e = y.to_eigen();
   auto z_e = z.to_eigen();
   sparse::refactorize<T, I>(
-    work, results, kkt_active, active_constraints, data, stack, xtag);
+    work, results, settings, kkt_active, active_constraints, data, stack, xtag);
   switch (settings.initial_guess) {
     case InitialGuessStatus::EQUALITY_CONSTRAINED_INITIAL_GUESS: {
       LDLT_TEMP_VEC_UNINIT(T, rhs, n_tot, stack);
@@ -727,6 +735,7 @@ qp_solve(Results<T>& results,
     }
   }
   T rhs_duality_gap(0);
+  T scaled_eps(settings.eps_abs);
 
   for (isize iter = 0; iter < settings.max_iter; ++iter) {
 
@@ -755,7 +764,7 @@ qp_solve(Results<T>& results,
 
       // vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
       auto is_primal_feasible = [&](T primal_feasibility_lhs) -> bool {
-        T rhs_pri = settings.eps_abs;
+        T rhs_pri = scaled_eps;
         if (settings.eps_rel != 0) {
           rhs_pri +=
             settings.eps_rel * std::max({ primal_feasibility_eq_rhs_0,
@@ -781,7 +790,9 @@ qp_solve(Results<T>& results,
       VEG_BIND( // ?
         auto,
         (primal_feasibility_lhs, dual_feasibility_lhs),
-        detail::unscaled_primal_dual_residual(results,
+        detail::unscaled_primal_dual_residual(work,
+                                              results,
+                                              settings,
                                               primal_residual_eq_scaled,
                                               primal_residual_in_scaled_lo,
                                               primal_residual_in_scaled_up,
@@ -829,10 +840,10 @@ qp_solve(Results<T>& results,
                   << std::endl;
         std::cout << std::scientific << std::setw(2) << std::setprecision(2)
                   << "| primal residual=" << primal_feasibility_lhs
-                  << "| dual residual=" << dual_feasibility_lhs
-                  << "| dualality gap=" << results.info.duality_gap
-                  << "| mu_in=" << results.info.mu_in
-                  << "| rho=" << results.info.rho << std::endl;
+                  << " | dual residual=" << dual_feasibility_lhs
+                  << " | duality gap=" << results.info.duality_gap
+                  << " | mu_in=" << results.info.mu_in
+                  << " | rho=" << results.info.rho << std::endl;
         results.info.pri_res = primal_feasibility_lhs;
         results.info.dua_res = dual_feasibility_lhs;
         precond.scale_primal_in_place(VectorViewMut<T>{ from_eigen, x_e });
@@ -841,12 +852,29 @@ qp_solve(Results<T>& results,
       }
       if (is_primal_feasible(primal_feasibility_lhs) &&
           is_dual_feasible(dual_feasibility_lhs)) {
-        if (results.info.duality_gap <=
-            settings.eps_abs +
-              (settings.eps_rel + settings.eps_abs) * rhs_duality_gap) {
+        if (settings.check_duality_gap) {
+          if (std::fabs(results.info.duality_gap) <=
+              settings.eps_duality_gap_abs +
+                settings.eps_duality_gap_rel * rhs_duality_gap) {
+            results.info.pri_res = primal_feasibility_lhs;
+            results.info.dua_res = dual_feasibility_lhs;
+            if (settings.primal_infeasibility_solving) {
+              results.info.status =
+                QPSolverOutput::PROXQP_SOLVED_CLOSEST_PRIMAL_FEASIBLE;
+            } else {
+              results.info.status = QPSolverOutput::PROXQP_SOLVED;
+            }
+            break;
+          }
+        } else {
           results.info.pri_res = primal_feasibility_lhs;
           results.info.dua_res = dual_feasibility_lhs;
-          results.info.status = QPSolverOutput::PROXQP_SOLVED;
+          if (settings.primal_infeasibility_solving) {
+            results.info.status =
+              QPSolverOutput::PROXQP_SOLVED_CLOSEST_PRIMAL_FEASIBLE;
+          } else {
+            results.info.status = QPSolverOutput::PROXQP_SOLVED;
+          }
           break;
         }
       }
@@ -862,6 +890,14 @@ qp_solve(Results<T>& results,
 
       // Cx + 1/mu_in * z_prev
       primal_residual_in_scaled_up += results.info.mu_in * z_prev_e;
+      // switch (settings.merit_function_type) { NOT activated for the moment
+      //   case MeritFunctionType::GPDAL:
+      //     primal_residual_in_scaled_up +=
+      //       (settings.alpha_gpdal - 1.) * results.info.mu_in * results.z;
+      //     break;
+      //   case MeritFunctionType::PDAL:
+      //     break;
+      // }
       primal_residual_in_scaled_lo = primal_residual_in_scaled_up;
 
       // Cx - l + 1/mu_in * z_prev
@@ -883,14 +919,14 @@ qp_solve(Results<T>& results,
 
           // primal_dual_semi_smooth_newton_step
           {
-            LDLT_TEMP_VEC_UNINIT(bool, active_set_lo, n_in, stack);
-            LDLT_TEMP_VEC_UNINIT(bool, active_set_up, n_in, stack);
             LDLT_TEMP_VEC_UNINIT(bool, new_active_constraints, n_in, stack);
             auto rhs = dw;
 
-            active_set_lo.array() = primal_residual_in_scaled_lo.array() <= 0;
-            active_set_up.array() = primal_residual_in_scaled_up.array() >= 0;
-            new_active_constraints = active_set_lo || active_set_up;
+            work.active_set_low.array() =
+              primal_residual_in_scaled_lo.array() <= 0;
+            work.active_set_up.array() =
+              primal_residual_in_scaled_up.array() >= 0;
+            new_active_constraints = work.active_set_low || work.active_set_up;
 
             // active set change
             if (n_in > 0) {
@@ -920,15 +956,18 @@ qp_solve(Results<T>& results,
                       kkt.row_indices() + zx(kkt.col_start(usize(idx))),
                       kkt.values() + zx(kkt.col_start(usize(idx))),
                     };
-
-                    ldl =
-                      proxsuite::linalg::sparse::add_row(ldl,
-                                                         etree,
-                                                         perm_inv,
-                                                         idx,
-                                                         new_col,
-                                                         -results.info.mu_in,
-                                                         stack);
+                    T mu_in_neg = -results.info.mu_in;
+                    // switch (settings.merit_function_type)
+                    // {
+                    // case MeritFunctionType::GPDAL:
+                    //   mu_in_neg = -settings.alpha_gpdal * results.info.mu_in;
+                    //   break;
+                    // case MeritFunctionType::PDAL:
+                    //   mu_in_neg = -results.info.mu_in;
+                    //   break;
+                    // }
+                    ldl = proxsuite::linalg::sparse::add_row(
+                      ldl, etree, perm_inv, idx, new_col, mu_in_neg, stack);
                   }
                   active_constraints[i] = new_active_constraints[i];
 
@@ -948,6 +987,7 @@ qp_solve(Results<T>& results,
                 if (removed || added) {
                   refactorize(work,
                               results,
+                              settings,
                               kkt_active,
                               active_constraints,
                               data,
@@ -956,15 +996,14 @@ qp_solve(Results<T>& results,
                 }
               }
             }
-
+            rhs.setZero();
             rhs.head(n) = -dual_residual_scaled;
             rhs.segment(n, n_eq) = -primal_residual_eq_scaled;
-
             for (isize i = 0; i < n_in; ++i) {
-              if (active_set_up(i)) {
+              if (work.active_set_up(i)) {
                 rhs(n + n_eq + i) =
                   results.info.mu_in * z_e(i) - primal_residual_in_scaled_up(i);
-              } else if (active_set_lo(i)) {
+              } else if (work.active_set_low(i)) {
                 rhs(n + n_eq + i) =
                   results.info.mu_in * z_e(i) - primal_residual_in_scaled_lo(i);
               } else {
@@ -972,7 +1011,38 @@ qp_solve(Results<T>& results,
                 rhs.head(n) += z_e(i) * CT_scaled.to_eigen().col(i);
               }
             }
-
+            // switch (settings.merit_function_type) {
+            //   case MeritFunctionType::GPDAL:
+            //     for (isize i = 0; i < n_in; ++i) {
+            //       if (work.active_set_up(i)) {
+            //         rhs(n + n_eq + i) =
+            //           -primal_residual_in_scaled_up(i) +
+            //           z_e(i) * results.info.mu_in * settings.alpha_gpdal;
+            //       } else if (work.active_set_low(i)) {
+            //         rhs(n + n_eq + i) =
+            //           -primal_residual_in_scaled_lo(i) +
+            //           z_e(i) * results.info.mu_in * settings.alpha_gpdal;
+            //       } else {
+            //         rhs(n + n_eq + i) = -z_e(i);
+            //         rhs.head(n) += z_e(i) * CT_scaled.to_eigen().col(i);
+            //       }
+            //     }
+            //     break;
+            //   case MeritFunctionType::PDAL:
+            //     for (isize i = 0; i < n_in; ++i) {
+            //       if (work.active_set_up(i)) {
+            //         rhs(n + n_eq + i) = results.info.mu_in * z_e(i) -
+            //                             primal_residual_in_scaled_up(i);
+            //       } else if (work.active_set_low(i)) {
+            //         rhs(n + n_eq + i) = results.info.mu_in * z_e(i) -
+            //                             primal_residual_in_scaled_lo(i);
+            //       } else {
+            //         rhs(n + n_eq + i) = -z_e(i);
+            //         rhs.head(n) += z_e(i) * CT_scaled.to_eigen().col(i);
+            //       }
+            //     }
+            //     break;
+            // }
             ldl_solve_in_place(
               { proxqp::from_eigen, rhs },
               { proxqp::from_eigen,
@@ -993,10 +1063,10 @@ qp_solve(Results<T>& results,
               kkt_active,
               active_constraints);
           }
+
           auto dx = dw.head(n);
           auto dy = dw.segment(n, n_eq);
           auto dz = dw.segment(n + n_eq, n_in);
-
           LDLT_TEMP_VEC(T, Hdx, n, stack);
           LDLT_TEMP_VEC(T, Adx, n_eq, stack);
           LDLT_TEMP_VEC(T, Cdx, n_in, stack);
@@ -1007,7 +1077,14 @@ qp_solve(Results<T>& results,
           detail::noalias_symhiv_add(Hdx, H_scaled.to_eigen(), dx);
           detail::noalias_gevmmv_add(Adx, ATdy, AT_scaled.to_eigen(), dx, dy);
           detail::noalias_gevmmv_add(Cdx, CTdz, CT_scaled.to_eigen(), dx, dz);
-
+          // switch (settings.merit_function_type) {
+          //   case MeritFunctionType::GPDAL:
+          //     Cdx.noalias() +=
+          //       (settings.alpha_gpdal - 1.) * results.info.mu_in * dz;
+          //     break;
+          //   case MeritFunctionType::PDAL:
+          //     break;
+          // }
           T alpha = 1;
           // primal dual line search
           if (n_in > 0) {
@@ -1059,17 +1136,69 @@ qp_solve(Results<T>& results,
               };
             };
 
+            // auto gpdal_derivative_results =
+            //   [&](T alpha_cur) -> PrimalDualGradResult<T> {
+            //   LDLT_TEMP_VEC_UNINIT(T, Cdx_active, n_in, stack);
+            //   LDLT_TEMP_VEC_UNINIT(T, active_part_z, n_in, stack);
+            //   {
+            //     LDLT_TEMP_VEC_UNINIT(T, tmp_lo, n_in, stack);
+            //     LDLT_TEMP_VEC_UNINIT(T, tmp_up, n_in, stack);
+
+            //     auto zero = Eigen::Matrix<T, Eigen::Dynamic, 1>::Zero(n_in);
+
+            //     tmp_lo = primal_residual_in_scaled_lo + alpha_cur * Cdx;
+            //     tmp_up = primal_residual_in_scaled_up + alpha_cur * Cdx;
+            //     Cdx_active =
+            //       (tmp_lo.array() < 0 || tmp_up.array() > 0).select(Cdx,
+            //       zero);
+            //     active_part_z = (tmp_lo.array() < 0)
+            //                       .select(primal_residual_in_scaled_lo, zero)
+            //                       +
+            //                     (tmp_up.array() > 0)
+            //                       .select(primal_residual_in_scaled_up,
+            //                       zero);
+            //   }
+
+            //   T a = dx.dot(Hdx) +                         //
+            //         results.info.rho * dx.squaredNorm() + //
+            //         results.info.mu_eq_inv * Adx.squaredNorm() +
+            //         +results.info.mu_in_inv * Cdx_active.squaredNorm() /
+            //           settings.alpha_gpdal + results.info.mu_eq_inv *
+            //           (Adx - results.info.mu_eq *dy).squaredNorm() +
+            //         results.info.mu_in * (1. - settings.alpha_gpdal) *
+            //           (dz).squaredNorm();
+
+            //   T b =
+            //     x_e.dot(Hdx) + // (results.info.rho * (x_e - x_prev_e) +
+            //     g_scaled_e).dot(dx) + // results.info.mu_eq_inv * Adx.dot(
+            //     primal_residual_eq_scaled +
+            //             y_e * results.info.mu_eq) + //
+            //     results.info.mu_in_inv * Cdx_active.dot(active_part_z) /
+            //       settings.alpha_gpdal + //
+            //     results.info.mu_eq_inv * primal_residual_eq_scaled.dot( Adx -
+            //                                   dy * results.info.mu_eq) + //
+            //     (z_e).dot(dz) * results.info.mu_in *
+            //       (1. - settings.alpha_gpdal);
+
+            //   return {
+            //     a,
+            //     b,
+            //     a * alpha_cur + b,
+            //   };
+            // };
+
             LDLT_TEMP_VEC_UNINIT(T, alphas, 2 * n_in, stack);
             isize alphas_count = 0;
+            const T machine_eps = std::numeric_limits<T>::epsilon();
 
             for (isize i = 0; i < n_in; ++i) {
               T alpha_candidates[2] = {
-                -primal_residual_in_scaled_lo(i) / (Cdx(i)),
-                -primal_residual_in_scaled_up(i) / (Cdx(i)),
+                -primal_residual_in_scaled_lo(i) / (Cdx(i) + machine_eps),
+                -primal_residual_in_scaled_up(i) / (Cdx(i) + machine_eps),
               };
 
               for (auto alpha_candidate : alpha_candidates) {
-                if (alpha_candidate > 0) {
+                if (alpha_candidate > machine_eps) {
                   alphas[alphas_count] = alpha_candidate;
                   ++alphas_count;
                 }
@@ -1079,19 +1208,25 @@ qp_solve(Results<T>& results,
             alphas_count =
               std::unique(alphas.data(), alphas.data() + alphas_count) -
               alphas.data();
-
-            if (alphas_count > 0 && alphas[0] <= 1) {
+            if (alphas_count > 0) { //&& alphas[0] <= 1
               auto infty = std::numeric_limits<T>::infinity();
 
               T last_neg_grad = 0;
               T alpha_last_neg = 0;
               T first_pos_grad = 0;
               T alpha_first_pos = infty;
-
               {
                 for (isize i = 0; i < alphas_count; ++i) {
                   T alpha_cur = alphas[i];
                   T gr = primal_dual_gradient_norm(alpha_cur).grad;
+                  // switch (settings.merit_function_type) {
+                  //   case MeritFunctionType::GPDAL:
+                  //     gr = gpdal_derivative_results(alpha_cur).grad;
+                  //     break;
+                  //   case MeritFunctionType::PDAL:
+                  //     gr = primal_dual_gradient_norm(alpha_cur).grad;
+                  //     break;
+                  // }
 
                   if (gr < 0) {
                     alpha_last_neg = alpha_cur;
@@ -1106,11 +1241,32 @@ qp_solve(Results<T>& results,
                 if (alpha_last_neg == 0) {
                   last_neg_grad =
                     primal_dual_gradient_norm(alpha_last_neg).grad;
+                  // switch (settings.merit_function_type) {
+                  //   case MeritFunctionType::GPDAL:
+                  //     last_neg_grad =
+                  //       gpdal_derivative_results(alpha_last_neg).grad;
+                  //     break;
+                  //   case MeritFunctionType::PDAL:
+                  //     last_neg_grad =
+                  //       primal_dual_gradient_norm(alpha_last_neg).grad;
+                  //     break;
+                  // }
                 }
-
                 if (alpha_first_pos == infty) {
                   auto res = primal_dual_gradient_norm(2 * alpha_last_neg + 1);
                   alpha = -res.b / res.a;
+                  // switch (settings.merit_function_type) {
+                  //   case MeritFunctionType::GPDAL: {
+                  //     auto res =
+                  //       gpdal_derivative_results(2 * alpha_last_neg + 1);
+                  //     alpha = -res.b / res.a;
+                  //   } break;
+                  //   case MeritFunctionType::PDAL: {
+                  //     auto res =
+                  //       primal_dual_gradient_norm(2 * alpha_last_neg + 1);
+                  //     alpha = -res.b / res.a;
+                  //   } break;
+                  // }
                 } else {
                   alpha = alpha_last_neg -
                           last_neg_grad * (alpha_first_pos - alpha_last_neg) /
@@ -1120,6 +1276,16 @@ qp_solve(Results<T>& results,
             } else {
               auto res = primal_dual_gradient_norm(T(0));
               alpha = -res.b / res.a;
+              // switch (settings.merit_function_type) {
+              //   case MeritFunctionType::GPDAL: {
+              //     auto res = gpdal_derivative_results(T(0));
+              //     alpha = -res.b / res.a;
+              //   } break;
+              //   case MeritFunctionType::PDAL: {
+              //     auto res = primal_dual_gradient_norm(T(0));
+              //     alpha = -res.b / res.a;
+              //   } break;
+              // }
             }
           }
           if (alpha * infty_norm(dw) < T(1e-11) && iter_inner > 0) {
@@ -1130,7 +1296,6 @@ qp_solve(Results<T>& results,
           x_e += alpha * dx;
           y_e += alpha * dy;
           z_e += alpha * dz;
-
           dual_residual_scaled +=
             alpha * (Hdx + ATdy + CTdz + results.info.rho * dx);
           primal_residual_eq_scaled += alpha * (Adx - results.info.mu_eq * dy);
@@ -1144,6 +1309,28 @@ qp_solve(Results<T>& results,
             (infty_norm(primal_residual_eq_scaled)),
             (infty_norm(dual_residual_scaled)),
           });
+          // switch (settings.merit_function_type) {
+          //   case MeritFunctionType::GPDAL:
+          //     err_in = std::max({
+          //       (infty_norm(
+          //         helpers::negative_part(primal_residual_in_scaled_lo) +
+          //         helpers::positive_part(primal_residual_in_scaled_up) -
+          //         settings.alpha_gpdal * results.info.mu_in * z_e)),
+          //       (infty_norm(primal_residual_eq_scaled)),
+          //       (infty_norm(dual_residual_scaled)),
+          //     });
+          //     break;
+          //   case MeritFunctionType::PDAL:
+          //     err_in = std::max({
+          //       (infty_norm(
+          //         helpers::negative_part(primal_residual_in_scaled_lo) +
+          //         helpers::positive_part(primal_residual_in_scaled_up) -
+          //         results.info.mu_in * z_e)),
+          //       (infty_norm(primal_residual_eq_scaled)),
+          //       (infty_norm(dual_residual_scaled)),
+          //     });
+          //     break;
+          // }
           /* put in debug mode
           if (settings.verbose) {
                   std::cout << "--inner iter " << iter_inner << " iner error "
@@ -1160,52 +1347,75 @@ qp_solve(Results<T>& results,
                       << "| inner residual=" << err_in << " | alpha=" << alpha
                       << std::endl;
           }
+          if (iter_inner % settings.frequence_infeasibility_check == 0 ||
+              settings.primal_infeasibility_solving) {
+            // compute primal and dual infeasibility criteria
+            bool is_primal_infeasible = proxsuite::proxqp::sparse::detail::
+              global_primal_residual_infeasibility(
+                VectorViewMut<T>{ from_eigen, ATdy },
+                VectorViewMut<T>{ from_eigen, CTdz },
+                VectorViewMut<T>{ from_eigen, dy },
+                VectorViewMut<T>{ from_eigen, dz },
+                qp_scaled.as_const(),
+                settings,
+                precond);
+            bool is_dual_infeasible = proxsuite::proxqp::sparse::detail::
+              global_dual_residual_infeasibility(
+                VectorViewMut<T>{ from_eigen, Adx },
+                VectorViewMut<T>{ from_eigen, Cdx },
+                VectorViewMut<T>{ from_eigen, Hdx },
+                VectorViewMut<T>{ from_eigen, dx },
+                qp_scaled.as_const(),
+                settings,
+                data,
+                precond);
+            if (is_primal_infeasible) {
+              results.info.status = QPSolverOutput::PROXQP_PRIMAL_INFEASIBLE;
+              if (!settings.primal_infeasibility_solving) {
+                results.info.iter += iter_inner + 1;
+                dw_prev = dw;
+                break;
+              }
+            } else if (is_dual_infeasible) {
+              if (!settings.primal_infeasibility_solving) {
+                results.info.status = QPSolverOutput::PROXQP_DUAL_INFEASIBLE;
+                results.info.iter += iter_inner + 1;
+                dw_prev = dw;
+                break;
+              }
+            }
+          }
           if (err_in <= bcl_eta_in) {
             results.info.iter += iter_inner + 1;
             return;
-          }
-
-          // compute primal and dual infeasibility criteria
-          bool is_primal_infeasible = proxsuite::proxqp::sparse::detail::
-            global_primal_residual_infeasibility(
-              VectorViewMut<T>{ from_eigen, ATdy },
-              VectorViewMut<T>{ from_eigen, CTdz },
-              VectorViewMut<T>{ from_eigen, dy },
-              VectorViewMut<T>{ from_eigen, dz },
-              qp_scaled.as_const(),
-              settings,
-              precond);
-          bool is_dual_infeasible = proxsuite::proxqp::sparse::detail::
-            global_dual_residual_infeasibility(
-              VectorViewMut<T>{ from_eigen, Adx },
-              VectorViewMut<T>{ from_eigen, Cdx },
-              VectorViewMut<T>{ from_eigen, Hdx },
-              VectorViewMut<T>{ from_eigen, dx },
-              qp_scaled.as_const(),
-              settings,
-              data,
-              precond);
-          if (is_primal_infeasible) {
-            results.info.status = QPSolverOutput::PROXQP_PRIMAL_INFEASIBLE;
-            dw_prev = dw;
-            break;
-          } else if (is_dual_infeasible) {
-            results.info.status = QPSolverOutput::PROXQP_DUAL_INFEASIBLE;
-            dw_prev = dw;
-            break;
           }
         }
       };
       // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
       primal_dual_newton_semi_smooth();
-      if (results.info.status == QPSolverOutput::PROXQP_PRIMAL_INFEASIBLE ||
+      if ((results.info.status == QPSolverOutput::PROXQP_PRIMAL_INFEASIBLE &&
+           !settings.primal_infeasibility_solving) ||
           results.info.status == QPSolverOutput::PROXQP_DUAL_INFEASIBLE) {
         // certificate of infeasibility
         results.x = dw_prev.head(data.dim);
         results.y = dw_prev.segment(data.dim, data.n_eq);
         results.z = dw_prev.tail(data.n_in);
+        // NOTE: values are unscaled at the end, so do the certificates of
+        // infeasibility
         break;
+      }
+      if (scaled_eps == settings.eps_abs &&
+          settings.primal_infeasibility_solving &&
+          results.info.status == QPSolverOutput::PROXQP_PRIMAL_INFEASIBLE) {
+        LDLT_TEMP_VEC(T, rhs_dim, n, stack);
+        LDLT_TEMP_VEC(T, rhs_n_eq, n_eq, stack);
+        LDLT_TEMP_VEC(T, rhs_n_in, n_in, stack);
+        rhs_n_eq.setConstant(T(1));
+        rhs_n_in.setConstant(T(1));
+        rhs_dim.noalias() =
+          AT_scaled.to_eigen() * rhs_n_eq + CT_scaled.to_eigen() * rhs_n_in;
+        scaled_eps = infty_norm(rhs_dim) * settings.eps_abs;
       }
       // VEG bind : met le résultat tuple de unscaled_primal_dual_residual dans
       // (primal_feasibility_lhs_new, dual_feasibility_lhs_new) en guessant leur
@@ -1213,7 +1423,9 @@ qp_solve(Results<T>& results,
       VEG_BIND(
         auto,
         (primal_feasibility_lhs_new, dual_feasibility_lhs_new),
-        detail::unscaled_primal_dual_residual(results,
+        detail::unscaled_primal_dual_residual(work,
+                                              results,
+                                              settings,
                                               primal_residual_eq_scaled,
                                               primal_residual_in_scaled_lo,
                                               primal_residual_in_scaled_up,
@@ -1234,12 +1446,32 @@ qp_solve(Results<T>& results,
 
       if (is_primal_feasible(primal_feasibility_lhs_new) &&
           is_dual_feasible(dual_feasibility_lhs_new)) {
-        if (results.info.duality_gap <=
-            settings.eps_abs +
-              (settings.eps_abs + settings.eps_rel) * rhs_duality_gap) {
+        if (settings.check_duality_gap) {
+          if (std::fabs(results.info.duality_gap) <=
+              settings.eps_duality_gap_abs +
+                settings.eps_duality_gap_rel * rhs_duality_gap) {
+            results.info.pri_res = primal_feasibility_lhs_new;
+            results.info.dua_res = dual_feasibility_lhs_new;
+            if (settings.primal_infeasibility_solving &&
+                results.info.status ==
+                  QPSolverOutput::PROXQP_PRIMAL_INFEASIBLE) {
+              results.info.status =
+                QPSolverOutput::PROXQP_SOLVED_CLOSEST_PRIMAL_FEASIBLE;
+            } else {
+              results.info.status = QPSolverOutput::PROXQP_SOLVED;
+            }
+            break;
+          }
+        } else {
           results.info.pri_res = primal_feasibility_lhs_new;
           results.info.dua_res = dual_feasibility_lhs_new;
-          results.info.status = QPSolverOutput::PROXQP_SOLVED;
+          if (settings.primal_infeasibility_solving &&
+              results.info.status == QPSolverOutput::PROXQP_PRIMAL_INFEASIBLE) {
+            results.info.status =
+              QPSolverOutput::PROXQP_SOLVED_CLOSEST_PRIMAL_FEASIBLE;
+          } else {
+            results.info.status = QPSolverOutput::PROXQP_SOLVED;
+          }
           break;
         }
       }
@@ -1276,7 +1508,9 @@ qp_solve(Results<T>& results,
       VEG_BIND(
         auto,
         (_, dual_feasibility_lhs_new_2),
-        detail::unscaled_primal_dual_residual(results,
+        detail::unscaled_primal_dual_residual(work,
+                                              results,
+                                              settings,
                                               primal_residual_eq_scaled,
                                               primal_residual_in_scaled_lo,
                                               primal_residual_in_scaled_up,
@@ -1297,7 +1531,7 @@ qp_solve(Results<T>& results,
       proxsuite::linalg::veg::unused(_);
 
       if (primal_feasibility_lhs_new >= primal_feasibility_lhs && //
-          dual_feasibility_lhs_new_2 >= primal_feasibility_lhs && //
+          dual_feasibility_lhs_new_2 >= dual_feasibility_lhs &&   //
           results.info.mu_in <= T(1.E-5)) {
         new_bcl_mu_in = settings.cold_reset_mu_in;
         new_bcl_mu_eq = settings.cold_reset_mu_eq;
@@ -1329,10 +1563,19 @@ qp_solve(Results<T>& results,
             alpha = results.info.mu_eq - new_bcl_mu_eq;
 
           } else {
-            if (!results.active_constraints[j - n_eq]) {
+            if (!work.active_inequalities[j - n_eq]) {
               continue;
             }
             alpha = results.info.mu_in - new_bcl_mu_in;
+            // switch (settings.merit_function_type)
+            // {
+            // case MeritFunctionType::GPDAL:
+            //   alpha = settings.alpha_gpdal * (results.info.mu_in -
+            //   new_bcl_mu_in); break;
+            // case MeritFunctionType::PDAL:
+            //   alpha = results.info.mu_in - new_bcl_mu_in;
+            //   break;
+            // }
           }
           T value = 1;
           proxsuite::linalg::sparse::VecRef<T, I> w{
@@ -1345,8 +1588,14 @@ qp_solve(Results<T>& results,
           ldl = rank1_update(ldl, etree, perm_inv, w, alpha, stack);
         }
       } else {
-        refactorize(
-          work, results, kkt_active, active_constraints, data, stack, xtag);
+        refactorize(work,
+                    results,
+                    settings,
+                    kkt_active,
+                    active_constraints,
+                    data,
+                    stack,
+                    xtag);
       }
     }
 
@@ -1374,39 +1623,45 @@ qp_solve(Results<T>& results,
   if (settings.verbose) {
     std::cout << "-------------------SOLVER STATISTICS-------------------"
               << std::endl;
-    std::cout << "outer iter:   " << results.info.iter_ext << std::endl;
-    std::cout << "total iter:   " << results.info.iter << std::endl;
-    std::cout << "mu updates:   " << results.info.mu_updates << std::endl;
-    std::cout << "rho updates:  " << results.info.rho_updates << std::endl;
-    std::cout << "objective:    " << results.info.objValue << std::endl;
+    std::cout << "outer iter:     " << results.info.iter_ext << std::endl;
+    std::cout << "total iter:     " << results.info.iter << std::endl;
+    std::cout << "mu updates:     " << results.info.mu_updates << std::endl;
+    std::cout << "rho updates:    " << results.info.rho_updates << std::endl;
+    std::cout << "objective:      " << results.info.objValue << std::endl;
     switch (results.info.status) {
       case QPSolverOutput::PROXQP_SOLVED: {
-        std::cout << "status:       "
+        std::cout << "status:         "
                   << "Solved" << std::endl;
         break;
       }
       case QPSolverOutput::PROXQP_MAX_ITER_REACHED: {
-        std::cout << "status:       "
+        std::cout << "status:         "
                   << "Maximum number of iterations reached" << std::endl;
         break;
       }
       case QPSolverOutput::PROXQP_PRIMAL_INFEASIBLE: {
-        std::cout << "status:       "
+        std::cout << "status:         "
                   << "Primal infeasible" << std::endl;
         break;
       }
       case QPSolverOutput::PROXQP_DUAL_INFEASIBLE: {
-        std::cout << "status:       "
+        std::cout << "status:         "
                   << "Dual infeasible" << std::endl;
         break;
       }
-      default: {
-        assert(false && "Should never happened");
+      case QPSolverOutput::PROXQP_SOLVED_CLOSEST_PRIMAL_FEASIBLE: {
+        std::cout << "status:         "
+                  << "Solved closest primal feasible" << std::endl;
+        break;
+      }
+      case QPSolverOutput::PROXQP_NOT_RUN: {
+        std::cout << "status:         "
+                  << "Solver not run" << std::endl;
         break;
       }
     }
     if (settings.compute_timings)
-      std::cout << "run time:     " << results.info.solve_time << std::endl;
+      std::cout << "run time [μs]:  " << results.info.solve_time << std::endl;
     std::cout << "--------------------------------------------------------"
               << std::endl;
   }

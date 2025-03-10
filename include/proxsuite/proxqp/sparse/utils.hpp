@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2022 INRIA
+// Copyright (c) 2022-2024 INRIA
 //
 /** \file */
 
@@ -13,6 +13,7 @@
 #include "proxsuite/helpers/common.hpp"
 #include <proxsuite/linalg/dense/core.hpp>
 #include <proxsuite/linalg/sparse/core.hpp>
+#include "proxsuite/proxqp/sparse/workspace.hpp"
 #include <proxsuite/linalg/sparse/factorize.hpp>
 #include <proxsuite/linalg/sparse/update.hpp>
 #include <proxsuite/linalg/sparse/rowmod.hpp>
@@ -487,23 +488,23 @@ global_primal_residual_infeasibility(VectorViewMut<T> ATdy,
   //
   // the variables in entry are changed in place
 
-  bool res = infty_norm(dy.to_eigen()) != 0 && infty_norm(dz.to_eigen()) != 0;
+  bool res = infty_norm(dy.to_eigen()) != 0 || infty_norm(dz.to_eigen()) != 0;
   if (!res) {
     return res;
   }
   ruiz.unscale_dual_residual_in_place(ATdy);
   ruiz.unscale_dual_residual_in_place(CTdz);
-  T eq_inf = dy.to_eigen().dot(qp_scaled.b.to_eigen());
-  T in_inf = helpers::positive_part(dz.to_eigen()).dot(qp_scaled.u.to_eigen()) -
-             helpers::negative_part(dz.to_eigen()).dot(qp_scaled.l.to_eigen());
+  T lower_bound_1 =
+    dy.to_eigen().dot(qp_scaled.b.to_eigen()) +
+    helpers::positive_part(dz.to_eigen()).dot(qp_scaled.u.to_eigen()) -
+    helpers::negative_part(dz.to_eigen()).dot(qp_scaled.l.to_eigen());
   ruiz.unscale_dual_in_place_eq(dy);
   ruiz.unscale_dual_in_place_in(dz);
-
-  T bound_y = qpsettings.eps_primal_inf * infty_norm(dy.to_eigen());
-  T bound_z = qpsettings.eps_primal_inf * infty_norm(dz.to_eigen());
-
-  res = infty_norm(ATdy.to_eigen()) <= bound_y && eq_inf <= -bound_y &&
-        infty_norm(CTdz.to_eigen()) <= bound_z && in_inf <= -bound_z;
+  T lower_bound_2 = infty_norm(ATdy.to_eigen() + CTdz.to_eigen());
+  T upper_bound =
+    qpsettings.eps_primal_inf *
+    std::max(infty_norm(dy.to_eigen()), infty_norm(dz.to_eigen()));
+  res = lower_bound_2 <= upper_bound && lower_bound_1 <= -upper_bound;
   return res;
 }
 /*!
@@ -562,12 +563,12 @@ global_dual_residual_infeasibility(VectorViewMut<T> Adx,
 
   for (i64 iter = 0; iter < qpmodel.n_in; ++iter) {
     T Cdx_i = Cdx.to_eigen()[iter];
-    if (qp_scaled.u.to_eigen()[iter] <= 1.E20 &&
-        qp_scaled.l.to_eigen()[iter] >= -1.E20) {
+    if (qp_scaled.u.to_eigen()[iter] <= T(1.E20) &&
+        qp_scaled.l.to_eigen()[iter] >= T(-1.E20)) {
       first_cond = first_cond && Cdx_i <= bound && Cdx_i >= bound_neg;
-    } else if (qp_scaled.u.to_eigen()[iter] > 1.E20) {
+    } else if (qp_scaled.u.to_eigen()[iter] > T(1.E20)) {
       first_cond = first_cond && Cdx_i >= bound_neg;
-    } else if (qp_scaled.l.to_eigen()[iter] < -1.E20) {
+    } else if (qp_scaled.l.to_eigen()[iter] < T(-1.E20)) {
       first_cond = first_cond && Cdx_i <= bound;
     }
   }
@@ -613,7 +614,9 @@ global_dual_residual_infeasibility(VectorViewMut<T> Adx,
 template<typename T, typename I, typename P>
 auto
 unscaled_primal_dual_residual(
+  Workspace<T, I>& work,
   Results<T>& results,
+  const Settings<T>& settings,
   VecMapMut<T> primal_residual_eq_scaled,
   VecMapMut<T> primal_residual_in_scaled_lo,
   VecMapMut<T> primal_residual_in_scaled_up,
@@ -635,9 +638,6 @@ unscaled_primal_dual_residual(
 {
   isize n = x_e.rows();
 
-  const isize max_dim = std::max(data.dim, std::max(data.n_eq, data.n_in));
-  const T sqrt_max_dim(std::sqrt(max_dim)); // for normalizing scalar products
-
   LDLT_TEMP_VEC_UNINIT(T, tmp, n, stack);
   dual_residual_scaled = qp_scaled.g.to_eigen();
   {
@@ -650,7 +650,7 @@ unscaled_primal_dual_residual(
     dual_feasibility_rhs_0 = infty_norm(tmp);
     precond.unscale_primal_in_place({ proxqp::from_eigen, x_e });
     results.info.duality_gap = x_e.dot(data.g); // contains gTx
-    rhs_duality_gap = std::abs(results.info.duality_gap);
+    rhs_duality_gap = std::fabs(results.info.duality_gap);
 
     const T xHx = (tmp).dot(x_e);
     results.info.duality_gap += xHx;
@@ -666,21 +666,19 @@ unscaled_primal_dual_residual(
 
     precond.unscale_dual_in_place_in({ proxsuite::proxqp::from_eigen, z_e });
 
-    const T zl = helpers::negative_part(z_e).dot(
-      helpers::at_least(data.l, -helpers::infinite_bound<T>::value()));
+    const T zl =
+      helpers::select(work.active_set_low, results.z, 0)
+        .dot(helpers::at_least(data.l, -helpers::infinite_bound<T>::value()));
     results.info.duality_gap += zl;
     rhs_duality_gap = std::max(rhs_duality_gap, std::abs(zl));
 
-    const T zu = helpers::positive_part(z_e).dot(
-      helpers::at_most(data.u, helpers::infinite_bound<T>::value()));
+    const T zu =
+      helpers::select(work.active_set_up, results.z, 0)
+        .dot(helpers::at_most(data.u, helpers::infinite_bound<T>::value()));
     results.info.duality_gap += zu;
     rhs_duality_gap = std::max(rhs_duality_gap, std::abs(zu));
 
     precond.scale_dual_in_place_in({ proxsuite::proxqp::from_eigen, z_e });
-
-    results.info.duality_gap /=
-      sqrt_max_dim; // in order to get an a-dimensional duality gap
-    rhs_duality_gap /= sqrt_max_dim;
   }
 
   {
@@ -730,6 +728,31 @@ unscaled_primal_dual_residual(
   T primal_feasibility_in_lhs = infty_norm(primal_residual_in_scaled_lo);
   T primal_feasibility_lhs =
     std::max(primal_feasibility_eq_lhs, primal_feasibility_in_lhs);
+
+  if ((settings.primal_infeasibility_solving &&
+       results.info.status == QPSolverOutput::PROXQP_PRIMAL_INFEASIBLE)) {
+    tmp.setZero();
+    {
+      results.se = primal_residual_eq_scaled;
+      results.si = primal_residual_in_scaled_lo;
+      precond.unscale_primal_residual_in_place_eq(
+        { proxqp::from_eigen,
+          primal_residual_eq_scaled }); // E^{-1}(unscaled Ax-b)
+      tmp.noalias() = qp_scaled.AT.to_eigen() * primal_residual_eq_scaled;
+    }
+
+    {
+      precond.unscale_primal_residual_in_place_in(
+        { proxqp::from_eigen,
+          primal_residual_in_scaled_lo }); // E^{-1}(unscaled Ax-b)
+      tmp.noalias() += qp_scaled.CT.to_eigen() * primal_residual_in_scaled_lo;
+    }
+    precond.unscale_dual_residual_in_place({ proxqp::from_eigen, tmp });
+
+    primal_feasibility_lhs = infty_norm(tmp);
+    precond.scale_primal_residual_in_place_eq(
+      { proxqp::from_eigen, primal_residual_eq_scaled });
+  }
 
   // scaled Ax - b
   precond.scale_primal_residual_in_place_eq(
