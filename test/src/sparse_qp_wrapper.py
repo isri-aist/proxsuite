@@ -14,7 +14,7 @@ def normInf(x):
         return np.linalg.norm(x, np.inf)
 
 
-def generate_mixed_qp(n, seed=1):
+def generate_mixed_qp(n, seed=1, reg=0.01):
     """
     Generate problem in QP format
     """
@@ -31,9 +31,9 @@ def generate_mixed_qp(n, seed=1):
     P = (P + P.T) / 2.0
 
     s = max(np.absolute(np.linalg.eigvals(P)))
-    P += (abs(s) + 1e-02) * spa.eye(n)
+    P += (abs(s) + reg) * spa.eye(n)
     P = spa.coo_matrix(P)
-    print("sparsity of P : {}".format((P.nnz) / (n**2)))
+    # print("sparsity of P : {}".format((P.nnz) / (n**2)))
     q = np.random.randn(n)
     A = spa.random(m, n, density=0.15, data_rvs=np.random.randn, format="csc")
     v = np.random.randn(n)  # Fictitious solution
@@ -45,9 +45,7 @@ def generate_mixed_qp(n, seed=1):
 
 
 class SparseqpWrapper(unittest.TestCase):
-
     # TESTS OF GENERAL METHODS OF THE API
-
     def test_case_update_rho(self):
         print(
             "------------------------sparse random strongly convex qp with equality and inequality constraints: test update rho"
@@ -175,7 +173,6 @@ class SparseqpWrapper(unittest.TestCase):
         assert (qp.results.x == qp2.results.x).all()
 
     def test_case_update_mu(self):
-
         print(
             "------------------------sparse random strongly convex qp with equality and inequality constraints: test update mus"
         )
@@ -228,7 +225,6 @@ class SparseqpWrapper(unittest.TestCase):
         )
 
     def test_case_no_equilibration_at_initialization(self):
-
         print(
             "------------------------sparse random strongly convex qp with equality and inequality constraints: test with no equilibration at initialization"
         )
@@ -281,7 +277,6 @@ class SparseqpWrapper(unittest.TestCase):
         )
 
     def test_case_with_equilibration_at_initialization(self):
-
         print(
             "------------------------sparse random strongly convex qp with equality and inequality constraints: test with equilibration at initialization"
         )
@@ -334,7 +329,6 @@ class SparseqpWrapper(unittest.TestCase):
         )
 
     def test_case_no_initial_guess(self):
-
         print(
             "------------------------sparse random strongly convex qp with equality and inequality constraints: test with no initial guess"
         )
@@ -387,7 +381,6 @@ class SparseqpWrapper(unittest.TestCase):
         )
 
     def test_case_no_initial_guess_and_update(self):
-
         print(
             "------------------------sparse random strongly convex qp with equality and inequality constraints: test with no initial guess"
         )
@@ -479,7 +472,6 @@ class SparseqpWrapper(unittest.TestCase):
         )
 
     def test_case_warm_starting(self):
-
         print(
             "---testing sparse random strongly convex qp with equality and inequality constraints: test with warm start---"
         )
@@ -534,7 +526,6 @@ class SparseqpWrapper(unittest.TestCase):
         )
 
     def test_case_warm_start_with_previous_result(self):
-
         print(
             "---testing sparse random strongly convex qp with equality and inequality constraints: test with warm start with previous result---"
         )
@@ -663,7 +654,6 @@ class SparseqpWrapper(unittest.TestCase):
         )
 
     def test_case_cold_start_with_previous_result(self):
-
         print(
             "---testing sparse random strongly convex qp with equality and inequality constraints: test with cold start with previous result---"
         )
@@ -794,7 +784,6 @@ class SparseqpWrapper(unittest.TestCase):
         )
 
     def test_case_equilibration_option(self):
-
         print(
             "---testing sparse random strongly convex qp with equality and inequality constraints: test equilibration option---"
         )
@@ -897,7 +886,6 @@ class SparseqpWrapper(unittest.TestCase):
         )
 
     def test_case_equilibration_option_at_update(self):
-
         print(
             "---testing sparse random strongly convex qp with equality and inequality constraints: test equilibration option at update---"
         )
@@ -1065,7 +1053,6 @@ class SparseqpWrapper(unittest.TestCase):
         )
 
     def test_case_warm_start_with_other_initialization(self):
-
         print(
             "---testing sparse random strongly convex qp with equality and inequality constraints: test warm start with other initialization---"
         )
@@ -1116,7 +1103,6 @@ class SparseqpWrapper(unittest.TestCase):
     # TESTS ALL INITIAL GUESS OPTIONS FOR MULTIPLE SOLVES AT ONCE
 
     def test_case_multiple_solve_with_no_initial_guess(self):
-
         print(
             "---testing sparse random strongly convex qp with equality and inequality constraints: test multiple solve with no inital guess---"
         )
@@ -1243,7 +1229,6 @@ class SparseqpWrapper(unittest.TestCase):
         )
 
     def test_case_multiple_solve_with_equality_constrained_initial_guess(self):
-
         print(
             "---testing sparse random strongly convex qp with equality and inequality constraints: test multiple solve with equality constrained initial guess---"
         )
@@ -1374,7 +1359,6 @@ class SparseqpWrapper(unittest.TestCase):
     def test_case_warm_start_with_previous_result_starting_with_equality_constraints_initial_guess(
         self,
     ):
-
         print(
             "---testing sparse random strongly convex qp with equality and inequality constraints: test multiple solve after warm starting with previous results and equality constrained inital guess---"
         )
@@ -1507,7 +1491,6 @@ class SparseqpWrapper(unittest.TestCase):
         )
 
     def test_case_warm_start_with_previous_result_starting_with_no_initial_guess(self):
-
         print(
             "---testing sparse random strongly convex qp with equality and inequality constraints: test multiple solve after warm starting with previous results and no initial guess---"
         )
@@ -1638,7 +1621,6 @@ class SparseqpWrapper(unittest.TestCase):
         )
 
     def test_case_cold_start_with_previous_result_starting_with_no_initial_guess(self):
-
         print(
             "---testing sparse random strongly convex qp with equality and inequality constraints: test multiple solve after cold starting with previous results and no initial guess---"
         )
@@ -1769,7 +1751,6 @@ class SparseqpWrapper(unittest.TestCase):
         )
 
     def test_case_warm_start_with_no_initial_guess(self):
-
         print(
             "---testing sparse random strongly convex qp with equality and inequality constraints: test multiple solve from warm start and no initial guess---"
         )
@@ -1901,7 +1882,6 @@ class SparseqpWrapper(unittest.TestCase):
         )
 
     def test_case_warm_start_with_no_initial_guess_and_different_init(self):
-
         print(
             "---testing sparse random strongly convex qp with equality and inequality constraints: test solve from warm start and no initial guess with other initialization---"
         )
@@ -1985,7 +1965,6 @@ class SparseqpWrapper(unittest.TestCase):
     # TESTS WITH UPDATE + INITIAL GUESS OPTIONS
 
     def test_case_multiple_solve_with_no_initial_guess_and_update(self):
-
         print(
             "---testing sparse random strongly convex qp with equality and inequality constraints: test multiple solve with no inital guess and update---"
         )
@@ -2127,7 +2106,6 @@ class SparseqpWrapper(unittest.TestCase):
     def test_case_multiple_solve_with_equality_constrained_initial_guess_and_update(
         self,
     ):
-
         print(
             "---testing sparse random strongly convex qp with equality and inequality constraints: test multiple solve with equality constrained initial guess and update---"
         )
@@ -2271,7 +2249,6 @@ class SparseqpWrapper(unittest.TestCase):
     def test_case_warm_start_with_previous_result_starting_with_equality_constraints_initial_guess_and_update(
         self,
     ):
-
         print(
             "---testing sparse random strongly convex qp with equality and inequality constraints: test multiple solve after warm starting with previous results and equality constrained inital guess and update---"
         )
@@ -2419,7 +2396,6 @@ class SparseqpWrapper(unittest.TestCase):
     def test_case_warm_start_with_previous_result_starting_with_no_initial_guess_and_update(
         self,
     ):
-
         print(
             "---testing sparse random strongly convex qp with equality and inequality constraints: test multiple solve after warm starting with previous results and no initial guess and update---"
         )
@@ -2565,7 +2541,6 @@ class SparseqpWrapper(unittest.TestCase):
     def test_case_cold_start_with_previous_result_starting_with_no_initial_guess_and_update(
         self,
     ):
-
         print(
             "---testing sparse random strongly convex qp with equality and inequality constraints: test multiple solve after cold starting with previous results and no initial guess and update---"
         )
@@ -2698,7 +2673,6 @@ class SparseqpWrapper(unittest.TestCase):
         )
 
     def test_case_warm_start_with_no_initial_guess_and_update(self):
-
         print(
             "---testing sparse random strongly convex qp with equality and inequality constraints: test multiple solve from warm start and no initial guess and update---"
         )
@@ -2840,7 +2814,6 @@ class SparseqpWrapper(unittest.TestCase):
         )
 
     def test_case_initialization_with_rho_for_different_initial_guess(self):
-
         print(
             "---testing sparse random strongly convex qp with equality and inequality constraints: test initializaton with rho for different initial guess---"
         )
@@ -3060,7 +3033,6 @@ class SparseqpWrapper(unittest.TestCase):
         )
 
     def test_case_update_g_for_different_initial_guess(self):
-
         print(
             "---testing sparse random strongly convex qp with equality and inequality constraints: test update g for different initial guess---"
         )
@@ -3361,7 +3333,6 @@ class SparseqpWrapper(unittest.TestCase):
         )
 
     def test_case_update_A_for_different_initial_guess(self):
-
         print(
             "---testing sparse random strongly convex qp with equality and inequality constraints: test update A for different initial guess---"
         )
@@ -3657,7 +3628,6 @@ class SparseqpWrapper(unittest.TestCase):
         )
 
     def test_case_update_rho_update_for_different_initial_guess(self):
-
         print(
             "---testing sparse random strongly convex qp with equality and inequality constraints: test update rho for different initial guess---"
         )
@@ -4553,7 +4523,7 @@ class SparseqpWrapper(unittest.TestCase):
         b = None
         C = spa.csc_matrix(spa.eye(n))
         l = 2.0 * np.ones((n,))
-        u = np.full(l.shape, +np.infty)
+        u = np.full(l.shape, +np.inf)
 
         qp = proxsuite.proxqp.sparse.QP(n, 0, n)
         qp.init(H, g, A, b, C, l, u)
@@ -4604,6 +4574,165 @@ class SparseqpWrapper(unittest.TestCase):
                 qp.results.info.setup_time, qp.results.info.solve_time
             )
         )
+
+    def test_sparse_infeasibility_solving(
+        self,
+    ):
+        print(
+            "------------------------sparse random strongly convex qp with inequality constraints, test infeasibility solving"
+        )
+        n = 20
+        for i in range(20):
+            H, g, A, b, C, u, l = generate_mixed_qp(n, i)
+            b += 10.0  ## create infeasible pbls
+            u -= 100.0
+            n_eq = A.shape[0]
+            n_in = C.shape[0]
+            qp = proxsuite.proxqp.sparse.QP(n, n_eq, n_in)
+            qp.settings.eps_abs = 1.0e-5
+            qp.settings.eps_primal_inf = 1.0e-4
+            qp.settings.verbose = True
+            qp.settings.primal_infeasibility_solving = True
+            qp.settings.initial_guess = proxsuite.proxqp.InitialGuess.NO_INITIAL_GUESS
+            qp.init(
+                H,
+                np.asfortranarray(g),
+                A,
+                np.asfortranarray(b),
+                C,
+                np.asfortranarray(l),
+                np.asfortranarray(u),
+            )
+            qp.solve()
+            dua_res = normInf(
+                H @ qp.results.x
+                + g
+                + A.transpose() @ qp.results.y
+                + C.transpose() @ qp.results.z
+            )
+            ones = A.T @ np.ones(n_eq) + C.T @ np.ones(n_in)
+
+            scaled_eps = normInf(ones) * qp.settings.eps_abs
+            pri_res = normInf(
+                A.T @ (A @ qp.results.x - b)
+                + C.T
+                @ (
+                    np.maximum(C @ qp.results.x - u, 0)
+                    + np.minimum(C @ qp.results.x - l, 0)
+                )
+            )
+            assert dua_res <= qp.settings.eps_abs
+            assert pri_res <= scaled_eps
+
+    # def test_minimal_eigenvalue_estimation_nonconvex_eigen_option(
+    #     self,
+    # ):
+    #     print(
+    #         "------------------------dense non convex qp with inequality constraints, estimate minimal eigenvalue with eigen method"
+    #     )
+    #     n = 50
+    #     tol = 1.0
+    #     for i in range(50):
+    #         H, g, A, b, C, u, l = generate_mixed_qp(n, i,-0.01)
+    #         n_eq = A.shape[0]
+    #         n_in = C.shape[0]
+    #         qp = proxsuite.proxqp.sparse.QP(n, n_eq, n_in)
+    #         qp.settings.verbose = False
+    #         qp.settings.initial_guess = proxsuite.proxqp.InitialGuess.NO_INITIAL_GUESS
+    #         qp.settings.estimate_method_option = (
+    #             proxsuite.proxqp.EigenValueEstimateMethodOption.EigenRegularization
+    #         )
+    #         vals, _ = spa.linalg.eigs(H, which="SR")
+    #         min_eigenvalue = float(np.min(vals))
+    #         qp.init(
+    #             H,
+    #             np.asfortranarray(g),
+    #             A,
+    #             np.asfortranarray(b),
+    #             C,
+    #             np.asfortranarray(l),
+    #             np.asfortranarray(u),
+    #         )
+    #         print(f"{min_eigenvalue=}")
+    #         print(f"{qp.results.info.minimal_H_eigenvalue_estimate=}")
+    #         input()
+    #         assert (
+    #             np.abs(min_eigenvalue - qp.results.info.minimal_H_eigenvalue_estimate)
+    #             <= tol
+    #         )
+
+    def test_minimal_eigenvalue_estimation_nonconvex_manual_option(
+        self,
+    ):
+        print(
+            "------------------------dense non convex qp with inequality constraints, estimate minimal eigenvalue with manual option"
+        )
+        n = 50
+        tol = 1.0e-3
+        for i in range(50):
+            H, g, A, b, C, u, l = generate_mixed_qp(n, i, -0.01)
+            n_eq = A.shape[0]
+            n_in = C.shape[0]
+            qp = proxsuite.proxqp.sparse.QP(n, n_eq, n_in)
+            qp.settings.verbose = False
+            qp.settings.initial_guess = proxsuite.proxqp.InitialGuess.NO_INITIAL_GUESS
+            vals, _ = spa.linalg.eigs(H, which="SR")
+            min_eigenvalue = float(np.min(vals))
+            qp.init(
+                H,
+                np.asfortranarray(g),
+                A,
+                np.asfortranarray(b),
+                C,
+                np.asfortranarray(l),
+                np.asfortranarray(u),
+                manual_minimal_H_eigenvalue=min_eigenvalue,
+            )
+            assert (
+                np.abs(min_eigenvalue - qp.results.info.minimal_H_eigenvalue_estimate)
+                <= tol
+            )
+
+    def test_minimal_eigenvalue_estimation_nonconvex_power_iter_option(
+        self,
+    ):
+        print(
+            "------------------------sparse non convex qp with inequality constraints, estimate minimal eigenvalue with power iter option"
+        )
+        n = 50
+        tol = 1.0
+        for i in range(50):
+            H, g, A, b, C, u, l = generate_mixed_qp(n, i, -0.01)
+            n_eq = A.shape[0]
+            n_in = C.shape[0]
+            qp = proxsuite.proxqp.sparse.QP(n, n_eq, n_in)
+            qp.settings.verbose = False
+            qp.settings.initial_guess = proxsuite.proxqp.InitialGuess.NO_INITIAL_GUESS
+            estimate_minimal_eigen_value = proxsuite.proxqp.sparse.estimate_minimal_eigen_value_of_symmetric_matrix(
+                H, 1.0e-10, 100000
+            )
+            vals, _ = spa.linalg.eigs(H, which="SR")
+            min_eigenvalue = float(np.min(vals))
+            qp.init(
+                H,
+                np.asfortranarray(g),
+                A,
+                np.asfortranarray(b),
+                C,
+                np.asfortranarray(l),
+                np.asfortranarray(u),
+                manual_minimal_H_eigenvalue=estimate_minimal_eigen_value,
+            )
+            # vals_bis, _ = spa.linalg.eigs(H, which="LM")
+            # print(f"{vals_bis}=")
+            # print(f"{vals}=")
+            # print(f"{min_eigenvalue=}")
+            # print(f"{qp.results.info.minimal_H_eigenvalue_estimate=}")
+            # input()
+            assert (
+                np.abs(min_eigenvalue - qp.results.info.minimal_H_eigenvalue_estimate)
+                <= tol
+            )
 
 
 if __name__ == "__main__":

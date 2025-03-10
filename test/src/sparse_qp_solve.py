@@ -33,7 +33,7 @@ def generate_mixed_qp(n, seed=1):
     s = max(np.absolute(np.linalg.eigvals(P)))
     P += (abs(s) + 1e-02) * spa.eye(n)
     P = spa.coo_matrix(P)
-    print("sparsity of P : {}".format((P.nnz) / (n**2)))
+    # print("sparsity of P : {}".format((P.nnz) / (n**2)))
     q = np.random.randn(n)
     A = spa.random(m, n, density=0.15, data_rvs=np.random.randn, format="csc")
     v = np.random.randn(n)  # Fictitious solution
@@ -45,7 +45,6 @@ def generate_mixed_qp(n, seed=1):
 
 
 class SparseQpWrapper(unittest.TestCase):
-
     # TESTS DENSE SOLVE FUNCTION
 
     def test_case_basic_solve(self):
@@ -348,7 +347,7 @@ class SparseQpWrapper(unittest.TestCase):
         b = None
         C = spa.csc_matrix(spa.eye(n))
         l = 2.0 * np.ones((n,))
-        u = np.full(l.shape, +np.infty)
+        u = np.full(l.shape, +np.inf)
 
         results = proxsuite.proxqp.sparse.solve(H, g, A, b, C, l, u)
         x_theoretically_optimal = np.array([2.0] * 149 + [3.0])

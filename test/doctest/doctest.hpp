@@ -85,7 +85,7 @@
 #endif
 
 #define DOCTEST_COMPILER(MAJOR, MINOR, PATCH)                                  \
-  ((MAJOR)*10000000 + (MINOR)*100000 + (PATCH))
+  ((MAJOR) * 10000000 + (MINOR) * 100000 + (PATCH))
 
 // GCC/Clang and GCC/MSVC are mutually exclusive, but Clang/MSVC are not because
 // of clang-cl...
@@ -1563,8 +1563,7 @@ namespace detail {
 #endif // DOCTEST_CONFIG_TREAT_CHAR_STAR_AS_STRING
 // clang-format on
 
-struct DOCTEST_INTERFACE TestFailureException
-{};
+struct DOCTEST_INTERFACE TestFailureException{};
 
 DOCTEST_INTERFACE bool
 checkIfShouldThrow(assertType::Enum at);
@@ -2129,7 +2128,7 @@ public:
       res = m_translateFunction(ex); //! OCLINT parameter reassignment
       return true;
     } catch (...) {
-    }                       //! OCLINT -  empty catch statement
+    } //! OCLINT -  empty catch statement
 #endif                      // DOCTEST_CONFIG_NO_EXCEPTIONS
     static_cast<void>(res); // to silence -Wunused-parameter
     return false;
@@ -2629,9 +2628,7 @@ registerReporter(const char* name, int priority, bool isReporter)
   template<>                                                                   \
   struct iter<std::tuple<>>                                                    \
   {                                                                            \
-    iter(const char*, unsigned, int)                                           \
-    {                                                                          \
-    }                                                                          \
+    iter(const char*, unsigned, int) {}                                        \
   };                                                                           \
   }                                                                            \
   template<typename T>                                                         \

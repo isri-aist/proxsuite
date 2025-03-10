@@ -50,8 +50,11 @@ struct Info
   T pri_res;
   T dua_res;
   T duality_gap;
+  T iterative_residual;
   //// sparse backend used by solver, either CholeskySparse or MatrixFree
   SparseBackend sparse_backend;
+  //// quadratic cost minimal eigenvalue estimate
+  T minimal_H_eigenvalue_estimate;
 };
 ///
 /// @brief This class stores all the results of PROXQP solvers with sparse and
@@ -69,6 +72,10 @@ struct Results
   sparse::Vec<T> x;
   sparse::Vec<T> y;
   sparse::Vec<T> z;
+  sparse::Vec<T> se; // optimal shift to the closest feasible problem wrt
+                     // equality constraints
+  sparse::Vec<T> si; // optimal shift to the closest feasible problem wrt
+                     // inequality constraints
   proxsuite::linalg::veg::Vec<bool> active_constraints;
 
   Info<T> info;
@@ -80,17 +87,40 @@ struct Results
    * @param n_eq dimension of the number of equality constraints.
    * @param n_in dimension of the number of inequality constraints.
    */
-  Results(isize dim = 0, isize n_eq = 0, isize n_in = 0)
+  Results(isize dim = 0,
+          isize n_eq = 0,
+          isize n_in = 0,
+          bool box_constraints = false,
+          DenseBackend dense_backend = DenseBackend::PrimalDualLDLT)
     : x(dim)
     , y(n_eq)
     , z(n_in)
+    , se(n_eq)
+    , si(n_in)
   {
-
+    if (box_constraints) {
+      z.resize(dim + n_in);
+      si.resize(dim + n_in);
+    } else {
+      z.resize(n_in);
+      si.resize(n_in);
+    }
     x.setZero();
     y.setZero();
     z.setZero();
-
-    info.rho = 1e-6;
+    se.setZero();
+    si.setZero();
+    switch (dense_backend) {
+      case DenseBackend::PrimalDualLDLT:
+        info.rho = 1e-6;
+        break;
+      case DenseBackend::PrimalLDLT:
+        info.rho = 1.E-5;
+        break;
+      case DenseBackend::Automatic:
+        info.rho = 1.E-6;
+        break;
+    }
     info.mu_eq_inv = 1e3;
     info.mu_eq = 1e-3;
     info.mu_in_inv = 1e1;
@@ -107,8 +137,10 @@ struct Results
     info.pri_res = 0.;
     info.dua_res = 0.;
     info.duality_gap = 0.;
+    info.iterative_residual = 0.;
     info.status = QPSolverOutput::PROXQP_NOT_RUN;
     info.sparse_backend = SparseBackend::Automatic;
+    info.minimal_H_eigenvalue_estimate = 0.;
   }
   /*!
    * cleanups the Result variables and set the info variables to their initial
@@ -119,6 +151,8 @@ struct Results
     x.setZero();
     y.setZero();
     z.setZero();
+    se.setZero();
+    si.setZero();
     cold_start(settings);
   }
   void cleanup_statistics()
@@ -134,6 +168,7 @@ struct Results
     info.pri_res = 0.;
     info.dua_res = 0.;
     info.duality_gap = 0.;
+    info.iterative_residual = 0.;
     info.status = QPSolverOutput::PROXQP_MAX_ITER_REACHED;
     info.sparse_backend = SparseBackend::Automatic;
   }
@@ -145,12 +180,15 @@ struct Results
     info.mu_in_inv = 1e1;
     info.mu_in = 1e-1;
     info.nu = 1.;
+    info.minimal_H_eigenvalue_estimate = 0.;
     if (settings != nullopt) {
       info.rho = settings.value().default_rho;
       info.mu_eq = settings.value().default_mu_eq;
       info.mu_eq_inv = T(1) / info.mu_eq;
       info.mu_in = settings.value().default_mu_in;
       info.mu_in_inv = T(1) / info.mu_in;
+      info.minimal_H_eigenvalue_estimate =
+        settings.value().default_H_eigenvalue_estimate;
     }
     cleanup_statistics();
   }
@@ -159,9 +197,54 @@ struct Results
     x.setZero();
     y.setZero();
     z.setZero();
+    se.setZero();
+    si.setZero();
     cleanup_statistics();
   }
 };
+
+template<typename T>
+bool
+operator==(const Info<T>& info1, const Info<T>& info2)
+{
+  bool value =
+    info1.mu_eq == info2.mu_eq && info1.mu_eq_inv == info2.mu_eq_inv &&
+    info1.mu_in == info2.mu_in && info1.mu_in_inv == info2.mu_in_inv &&
+    info1.rho == info2.rho && info1.nu == info2.nu &&
+    info1.iter == info2.iter && info1.iter_ext == info2.iter_ext &&
+    info1.mu_updates == info2.mu_updates &&
+    info1.rho_updates == info2.rho_updates && info1.status == info2.status &&
+    info1.setup_time == info2.setup_time &&
+    info1.solve_time == info2.solve_time && info1.run_time == info2.run_time &&
+    info1.objValue == info2.objValue && info1.pri_res == info2.pri_res &&
+    info1.dua_res == info2.dua_res && info1.duality_gap == info2.duality_gap &&
+    info1.duality_gap == info2.duality_gap &&
+    info1.minimal_H_eigenvalue_estimate == info2.minimal_H_eigenvalue_estimate;
+  return value;
+}
+
+template<typename T>
+bool
+operator!=(const Info<T>& info1, const Info<T>& info2)
+{
+  return !(info1 == info2);
+}
+
+template<typename T>
+bool
+operator==(const Results<T>& results1, const Results<T>& results2)
+{
+  bool value = results1.x == results2.x && results1.y == results2.y &&
+               results1.z == results2.z && results1.info == results2.info;
+  return value;
+}
+
+template<typename T>
+bool
+operator!=(const Results<T>& results1, const Results<T>& results2)
+{
+  return !(results1 == results2);
+}
 
 } // namespace proxqp
 } // namespace proxsuite

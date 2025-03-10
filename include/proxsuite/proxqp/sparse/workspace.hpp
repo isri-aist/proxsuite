@@ -27,19 +27,12 @@
 namespace proxsuite {
 namespace proxqp {
 namespace sparse {
-///
-/// @brief This class defines the workspace of the sparse solver.
-///
-/*!
- * Workspace class of the sparse solver.
- */
-template<typename T, typename I>
-struct Workspace;
 
 template<typename T, typename I>
 void
 refactorize(Workspace<T, I>& work,
             Results<T> const& results,
+            Settings<T> const& settings,
             proxsuite::linalg::sparse::MatMut<T, I> kkt_active,
             proxsuite::linalg::veg::SliceMut<bool> active_constraints,
             Model<T, I> const& data,
@@ -48,7 +41,15 @@ refactorize(Workspace<T, I>& work,
 {
   isize n_tot = kkt_active.nrows();
   T mu_eq_neg = -results.info.mu_eq;
-  T mu_in_neg = -results.info.mu_in;
+  T mu_in_neg(0);
+  switch (settings.merit_function_type) {
+    case MeritFunctionType::GPDAL:
+      mu_in_neg = -settings.alpha_gpdal * results.info.mu_in;
+      break;
+    case MeritFunctionType::PDAL:
+      mu_in_neg = -results.info.mu_in;
+      break;
+  }
 
   if (work.internal.do_ldlt) {
     proxsuite::linalg::sparse::factorize_symbolic_non_zeros(
@@ -113,6 +114,7 @@ struct Ldlt
   proxsuite::linalg::veg::Vec<I> row_indices;
   proxsuite::linalg::veg::Vec<T> values;
 };
+
 template<typename T, typename I>
 struct Workspace
 {
@@ -158,7 +160,9 @@ struct Workspace
     bool is_initialized;
 
   } internal;
-
+  VecBool active_set_up;
+  VecBool active_set_low;
+  proxsuite::linalg::veg::Vec<bool> active_inequalities;
   isize lnnz;
   /*!
    * Constructor using the symbolic factorization.
@@ -716,6 +720,7 @@ struct Workspace
     DynStackMut stack = stack_mut();
     precond.scale_qp_in_place(qp_scaled,
                               execute_or_not,
+                              settings.primal_infeasibility_solving,
                               settings.preconditioner_max_iter,
                               settings.preconditioner_accuracy,
                               stack);
